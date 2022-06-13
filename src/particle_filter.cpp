@@ -45,6 +45,9 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
     p.weight = 1.0;
     particles.emplace_back(p);
   }
+
+  weights.resize(num_particles);
+  is_initialized = true;
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], 
@@ -62,19 +65,23 @@ void ParticleFilter::prediction(double delta_t, double std_pos[],
   std::default_random_engine motion_gen;
 
   for (int i = 0; i < num_particles; ++i) {
-    // using bicycle model with yaw rate is not equal to zero to get final position 
-    x_f = particles[i].x + (velocity / yaw_rate) * (sin(particles[i].theta + yaw_rate * delta_t) - sin(particles[i].theta));
-    y_f = particles[i].y + (velocity / yaw_rate) * (cos(particles[i].theta) - cos(particles[i].theta + yaw_rate * delta_t));
-    theta_f = particles[i].theta + yaw_rate * delta_t;
+    if (yaw_rate) {
+      particles[i].x += (velocity / yaw_rate) * (sin(particles[i].theta + yaw_rate * delta_t) - sin(particles[i].theta));
+      particles[i].y += (velocity / yaw_rate) * (cos(particles[i].theta) - cos(particles[i].theta + yaw_rate * delta_t));
+      particles[i].theta += yaw_rate * delta_t;
+    } else {
+      particles[i].x += velocity * delta_t * cos(particles[i].theta);
+      particles[i].y += velocity * delta_t * sin(particles[i].theta);
+    }
     
     // Create normal (Gaussian) distributions for x_f, y_f and theta_f
-    std::normal_distribution<double> dist_x_f(x_f, std_pos[0]);
-    std::normal_distribution<double> dist_y_f(y_f, std_pos[1]);
-    std::normal_distribution<double> dist_theta_f(theta_f, std_pos[2]);
+    std::normal_distribution<double> dist_x(particles[i].x, std_pos[0]);
+    std::normal_distribution<double> dist_y(particles[i].y, std_pos[1]);
+    std::normal_distribution<double> dist_theta(particles[i].theta, std_pos[2]);
     
-    particles[i].x = dist_x_f(motion_gen);
-    particles[i].y = dist_y_f(motion_gen);
-    particles[i].theta = dist_theta_f(motion_gen);
+    particles[i].x = dist_x(motion_gen);
+    particles[i].y = dist_y(motion_gen);
+    particles[i].theta = dist_theta(motion_gen);
   }
 
 }
@@ -122,32 +129,32 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
   double total_weight = 0.0;
   for (int i = 0; i < particles.size(); ++i) {
     // coordinate transformation from vehicle coordinate to map coordinate
-    vector<LandmarkObs> observations_mapcoordinate(observations.size());
+    vector<LandmarkObs> obs_map(observations.size());
     for (int j = 0; j < observations.size(); ++j) {
-      observations_mapcoordinate[j] = LandmarkObs{observations[j].id,
+      obs_map[j] = LandmarkObs{observations[j].id,
                                                   observations[j].x * cos(particles[i].theta) - observations[j].y * sin(particles[i].theta)+                                                   particles[i].x,
                                                   observations[j].x * sin(particles[i].theta) + observations[j].y * cos(particles[i].theta)+                                                   particles[i].y};
     }
     // find landmarks in sensor range
-    vector<LandmarkObs> landmarks_inrange;
-    landmarks_inrange.reserve(map_landmarks.landmark_list.size());
+    vector<LandmarkObs> local_landmarks;
+    local_landmarks.reserve(map_landmarks.landmark_list.size());
     for (int k = 0; k < map_landmarks.landmark_list.size(); ++k) {
       if (sensor_range > dist(particles[i].x, particles[i].y, 
                              map_landmarks.landmark_list[k].x_f, map_landmarks.landmark_list[k].y_f)) {
-       landmarks_inrange.push_back(LandmarkObs{map_landmarks.landmark_list[k].id_i,
+       local_landmarks.push_back(LandmarkObs{map_landmarks.landmark_list[k].id_i,
                                                map_landmarks.landmark_list[k].x_f,
                                                map_landmarks.landmark_list[k].y_f});
       }
     }
-    dataAssociation(landmarks_inrange, observations_mapcoordinate);
+    dataAssociation(local_landmarks, obs_map);
     // multivariate gaussian distribution to find weights
-    for (int l = 0; l < landmarks_inrange.size(); ++l) {
-      for (int m = 0; m < observations_mapcoordinate.size(); ++m) {
-        if (landmarks_inrange[l].id == observations_mapcoordinate[m].id) {
+    for (int l = 0; l < local_landmarks.size(); ++l) {
+      for (int m = 0; m < obs_map.size(); ++m) {
+        if (local_landmarks[l].id == obs_map[m].id) {
           particles[i].weight *= (1.0 / (2.0 * M_PI * std_landmark[0] * std_landmark[1])) *
-                                 exp(-1.0 * ((pow((observations_mapcoordinate[m].x - landmarks_inrange[l].x), 2) /
+                                 exp(-1.0 * ((pow((obs_map[m].x - local_landmarks[l].x), 2) /
                                  (2.0 * std_landmark[0] * std_landmark[0])) + 
-                                 (pow((observations_mapcoordinate[m].y - landmarks_inrange[l].y), 2) /
+                                 (pow((obs_map[m].y - local_landmarks[l].y), 2) /
                                  (2.0 * std_landmark[1] * std_landmark[1]))));
         }
       }
